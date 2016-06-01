@@ -12,7 +12,7 @@ This is a project just for fun. Trying to predict primes using machine learning 
 Primes were generated using [primesieve](https://github.com/kimwalisch/primesieve). Since we use threading we need sorting. The sequence 0 to 1e9 will generate about 50 GiB of training data which hits some practical and economical limitations for this project.
 ```
 git clone https://github.com/gurre/ml-predict-prime
-# You may also curl the binery from the releases page
+# You may also curl the binary from the releases page
 cd ml-predict-prime
 primesieve 0 1e9 -t2 -s2048 --print=1 | sort -k 1,1n > data/prime-1e9.txt
 primesieve 0 1e9 -t2 -s2048 --print=2 | sort -k 2,2n > data/twin-1e9.txt
