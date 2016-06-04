@@ -99,4 +99,6 @@ bin/
 test.csv
 test.json
 shortcomings/
-data/
+data/*.txt
+data/*.json
+data/*.csv

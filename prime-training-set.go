@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"math/big"
+	"math"
 	"os"
 	"os/signal"
 	"runtime"
+	"runtime/pprof"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,8 +19,8 @@ import (
 )
 
 var (
-	MIN_RANGE = big.NewInt(1)
-	MAX_RANGE = big.NewInt(1e9)
+	MIN_RANGE int64
+	MAX_RANGE int64
 
 	processedComp   uint64
 	processedPrimes uint64
@@ -26,20 +28,22 @@ var (
 
 	VERSION string // Set by goxc
 
-	ZERO = big.NewInt(0)
-	ONE  = big.NewInt(1)
-
 	// Lookup table: prime -> [degrees of k-tuples...] Use that RAM!
-	lookup      = make(map[string][]int)
+	lookup      = make(map[string][]uint64)
 	lookupmutex = &sync.Mutex{}
 
-	primes = make(chan *big.Int)
-	work   = make(chan *Composite)
-	output = make(chan *Composite)
+	movingAvg = NewMovingAverage(100)
 
+	//primes = make(chan uint64)
+	work   = make(chan *Composite)
+	output = make(chan *Composite, 100000)
+
+	flagStart        = flag.Int64("start", 1, "Start on number")
+	flagEnd          = flag.Int64("end", 1e9, "End on number")
 	flagJsonFilePath = flag.String("json", "", "Output to file formatted in json")
 	flagCsvFilePath  = flag.String("csv", "", "Output to file formatted in csv")
 	flagSilent       = flag.Bool("silent", false, "Don't print anything")
+	flagCpuProfile   = flag.String("cpuprofile", "", "write cpu profile to file")
 
 	files = map[string]string{
 		"twin":    "data/twin-1e9.txt",
@@ -51,15 +55,18 @@ var (
 )
 
 type Composite struct {
-	Comp     *big.Int   `json:"comp"`
-	Factors  []*big.Int `json:"factors"`
-	Nfactors int        `json:"nfactors"`
-	Prime    byte       `json:"prime"`
-	Twin     byte       `json:"twin"`
-	Triplet  byte       `json:"triplet"`
-	Quad     byte       `json:"quad"`
-	Penta    byte       `json:"penta"`
-	Sexy     byte       `json:"sexy"`
+	Comp           uint64        `json:"comp"`
+	Prime          byte          `json:"prime"`
+	Factors        []uint64      `json:"factors"`
+	Nfactors       uint64        `json:"nfactors"`
+	ReducedResidue []uint64      `json:"residues"` // Just to heavy to compute
+	Totient        uint64        `json:"totient"`
+	Twin           byte          `json:"twin"`
+	Triplet        byte          `json:"trip"`
+	Quad           byte          `json:"quad"`
+	Penta          byte          `json:"penta"`
+	Sexy           byte          `json:"sexy"`
+	Duration       time.Duration `json:"nanodura"`
 }
 
 type WaitGroupWrapper struct {
@@ -75,8 +82,19 @@ func (w *WaitGroupWrapper) Wrap(cb func()) {
 }
 
 func main() {
-	flag.Parse()
 	runtime.GOMAXPROCS(runtime.NumCPU())
+
+	flag.Parse()
+
+	if *flagCpuProfile != "" {
+		f, err := os.Create(*flagCpuProfile)
+		if err != nil {
+			panic(err)
+		}
+		pprof.StartCPUProfile(f)
+		defer pprof.StopCPUProfile()
+	}
+
 	if *flagSilent == false {
 		fmt.Printf("Running prime-training-set (%s)\n", VERSION)
 	}
@@ -84,6 +102,9 @@ func main() {
 		fmt.Println("Must use either --json or --csv flag. (e.g. --csv=test.csv)")
 		os.Exit(1)
 	}
+
+	MIN_RANGE = *flagStart
+	MAX_RANGE = *flagEnd
 
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
@@ -97,7 +118,7 @@ func main() {
 			forLineInFile(file, func(numbers []string) {
 				for _, n := range numbers {
 					lookupmutex.Lock()
-					lookup[n] = AppendIfMissing(lookup[n], len(numbers))
+					lookup[n] = AppendIfMissing(lookup[n], uint64(len(numbers)))
 					lookupmutex.Unlock()
 				}
 			})
@@ -108,29 +129,22 @@ func main() {
 	// Waiting for index to be built
 	wg.Wait()
 
-  if *flagSilent == false {
-	  fmt.Printf("done\n")
-  }
+	if *flagSilent == false {
+		fmt.Printf("done\n")
+	}
 
 	// start generating composites
-	go compGenerator(func(composite *big.Int) {
+	go compGenerator(func(composite uint64) {
 		c := &Composite{Comp: composite}
 		work <- c
 	})
 
-	go primeProcessor()
+	for i := 0; i < runtime.NumCPU(); i++ {
+		go consumer()
+	}
 
 	// Write processed primes to json and/or csv
 	go fileWriter()
-
-	// Start feed primes
-	go forLineInFile("data/prime-1e9.txt", func(numbers []string) {
-		for _, n := range numbers {
-			i := new(big.Int)
-			i.SetString(n, 10)
-			primes <- i
-		}
-	})
 
 	if *flagSilent == false {
 		go statusPrinter()
@@ -151,7 +165,7 @@ func statusPrinter() {
 	tick := time.Tick(time.Second)
 	for {
 		<-tick
-		fmt.Printf("\rProcessed primes: %d /s, Composites: %d /s, Printed: %d /s         ", processedPrimes-oldProcessedPrimes, processedComp-oldProcessedComp, printed-oldPrinted)
+		fmt.Printf("\rProcessed primes: %d /s, Composites: %d /s, Printed: %d /s   [%.3f s/op]      ", processedPrimes-oldProcessedPrimes, processedComp-oldProcessedComp, printed-oldPrinted, movingAvg.Avg())
 		oldProcessedPrimes, oldProcessedComp, oldPrinted = processedPrimes, processedComp, printed
 	}
 }
@@ -175,6 +189,9 @@ func fileWriter() {
 		if err != nil {
 			panic(err)
 		}
+		if _, err := cf.WriteString("Comp,Prime,Nfactors,Totient,Twin,Triplet,Quad,Penta,Sexy\n"); err != nil {
+			panic(err)
+		}
 	}
 
 	for {
@@ -182,7 +199,7 @@ func fileWriter() {
 		if !open {
 			break
 		}
-		go atomic.AddUint64(&printed, 1)
+		atomic.AddUint64(&printed, 1)
 		if *flagJsonFilePath != "" {
 			cjson, _ := json.Marshal(comp)
 			if _, err := jf.Write(append(cjson, []byte("\n")...)); err != nil {
@@ -190,7 +207,7 @@ func fileWriter() {
 			}
 		}
 		if *flagCsvFilePath != "" {
-			if _, err := cf.WriteString(fmt.Sprintf("%s,%d,%d,%d,%d,%d,%d,%d\n", comp.Comp.String(), comp.Nfactors, comp.Prime, comp.Twin, comp.Triplet, comp.Quad, comp.Penta, comp.Sexy)); err != nil {
+			if _, err := cf.WriteString(fmt.Sprintf("%d,%d,%d,%d,%d,%d,%d,%d,%d\n", comp.Comp, comp.Prime, comp.Nfactors, comp.Totient, comp.Twin, comp.Triplet, comp.Quad, comp.Penta, comp.Sexy)); err != nil {
 				panic(err)
 			}
 		}
@@ -203,31 +220,28 @@ func fileWriter() {
 	}
 }
 
-func primeProcessor() {
+func consumer() {
 	var (
-		c     *Composite
-		prime *big.Int
-		open  bool
+		c    *Composite
+		open bool
 	)
-	prime, _ = <-primes
+
 	for {
 		c, open = <-work
 		if !open {
 			return
 		}
-		// We got a prime
-		if prime.Cmp(c.Comp) == 0 {
-			prime, open = <-primes
-			if !open {
-				return
-			}
-			c.Prime = 1
-		}
-		if c.Prime == 1 {
-			go func(c *Composite) {
-				c.Factors = make([]*big.Int, 0)
-				c.Nfactors = 1
-				if tuples, ok := lookup[c.Comp.String()]; ok {
+		t0 := time.Now()
+
+		if isPrime(c.Comp) {
+			go func(c *Composite, t time.Time) {
+				c.Factors = []uint64{}
+				c.Nfactors = 0
+				c.Prime = 1
+
+				c.Totient = c.Comp - 1 // Quite a lot faster then φ(c.Comp)
+				//c.Totient = φ(c.Comp)
+				if tuples, ok := lookup[strconv.FormatUint(c.Comp, 10)]; ok {
 					for _, tuple := range tuples {
 						if tuple == 2 {
 							c.Twin = 1
@@ -246,30 +260,36 @@ func primeProcessor() {
 						}
 					}
 				}
-				go atomic.AddUint64(&processedPrimes, 1)
+				c.Duration = time.Now().Sub(t)
+				movingAvg.Add(c.Duration.Seconds())
+				atomic.AddUint64(&processedPrimes, 1)
 				output <- c
-			}(c)
+			}(c, t0)
 		} else {
-			go func(c *Composite) {
-				cp := new(big.Int)
-				cp.Set(c.Comp)
-				c.Factors = Primes(cp)
-				c.Nfactors = len(c.Factors)
-				go atomic.AddUint64(&processedComp, 1)
+			go func(c *Composite, t time.Time) {
+				c.Prime = 0
+				c.Factors = getDecomposition(c.Comp)
+				c.Nfactors = uint64(len(c.Factors))
+
+				c.Totient = φ(c.Comp)
+				//c.ReducedResidue = φ(c.Comp)
+
+				c.Duration = time.Now().Sub(t)
+				movingAvg.Add(c.Duration.Seconds())
+				atomic.AddUint64(&processedComp, 1)
 				output <- c
-			}(c)
+			}(c, t0)
 		}
 	}
 }
 
-type cbBigint func(*big.Int)
+type cbBigint func(uint64)
 
 func compGenerator(callback cbBigint) {
-	var j *big.Int
-	for i := MIN_RANGE; i.Cmp(MAX_RANGE) < 1; i.Add(i, ONE) {
-		j = new(big.Int)
-		callback(j.Add(i, ONE))
+	for i := MIN_RANGE; i < MAX_RANGE; i++ {
+		callback(uint64(i))
 	}
+	close(work)
 }
 
 type cbStr func([]string)
@@ -292,27 +312,125 @@ func forLineInFile(filepath string, action cbStr) {
 	}
 }
 
-// Ref: https://rosettacode.org/wiki/Prime_decomposition#Go
-func Primes(n *big.Int) []*big.Int {
-	res := []*big.Int{}
-	mod, div := new(big.Int), new(big.Int)
-	for i := big.NewInt(2); i.Cmp(n) != 1; {
-		div.DivMod(n, i, mod)
-		for mod.Cmp(ZERO) == 0 {
-			res = append(res, new(big.Int).Set(i))
-			n.Set(div)
-			div.DivMod(n, i, mod)
-		}
-		i.Add(i, ONE)
+// https://github.com/aansel/project_euler_go/blob/0a24b2c41e558d157b9b28aec15d6dca43f2141a/src/problem47.go
+func getDecomposition(nb uint64) []uint64 {
+	var dec []uint64
+	var i uint64
+
+	var divisor2 uint64 = 1
+	for nb%2 == 0 {
+		nb = nb / 2
+		divisor2 *= 2
 	}
-	return res
+	if divisor2 > 1 {
+		dec = append(dec, divisor2)
+	}
+
+	for i = 3; nb > 1; i += 2 {
+		var divisor uint64 = 1
+		for nb%i == 0 && isPrime(i) {
+			nb = nb / i
+			divisor *= i
+		}
+		if divisor > 1 {
+			dec = append(dec, divisor)
+		}
+	}
+	return dec
 }
 
-func AppendIfMissing(slice []int, i int) []int {
+func isPrime(nb uint64) bool {
+	if nb < 2 {
+		return false
+	}
+	var i uint64
+	for i = 2; i <= uint64(math.Sqrt(float64(nb))); i++ {
+		if nb%i == 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// In number theory, Euler's totient function counts the positive integers up to a given integer n that are relatively prime to n. It is written using the Greek letter phi as φ(n) or ϕ(n), and may also be called Euler's phi function.
+func φ(number uint64) (residues uint64) {
+	var i uint64
+	for i = 1; i <= number; i++ {
+		if gcd(i, number) == 1 {
+			residues++
+			//residues = AppendIfMissing(residues, i)
+		}
+	}
+	return
+}
+
+func gcd(x, y uint64) uint64 {
+	for y != 0 {
+		x, y = y, x%y
+	}
+	return x
+}
+
+func AppendIfMissing(slice []uint64, i uint64) []uint64 {
 	for _, ele := range slice {
 		if ele == i {
 			return slice
 		}
 	}
 	return append(slice, i)
+}
+
+// @author Robin Verlangen
+// Moving average implementation for Go
+
+type MovingAverage struct {
+	Window      int
+	values      []float64
+	valPos      int
+	slotsFilled bool
+}
+
+func (ma *MovingAverage) Avg() float64 {
+	var sum = float64(0)
+	var c = ma.Window - 1
+
+	// Are all slots filled? If not, ignore unused
+	if !ma.slotsFilled {
+		c = ma.valPos - 1
+		if c < 0 {
+			// Empty register
+			return 0
+		}
+	}
+
+	// Sum values
+	var ic = 0
+	for i := 0; i <= c; i++ {
+		sum += ma.values[i]
+		ic++
+	}
+
+	// Finalize average and return
+	avg := sum / float64(ic)
+	return avg
+}
+func (ma *MovingAverage) Add(val float64) {
+	// Put into values array
+	ma.values[ma.valPos] = val
+
+	// Increment value position
+	ma.valPos = (ma.valPos + 1) % ma.Window
+
+	// Did we just go back to 0, effectively meaning we filled all registers?
+	if !ma.slotsFilled && ma.valPos == 0 {
+		ma.slotsFilled = true
+	}
+}
+func NewMovingAverage(window int) *MovingAverage {
+	return &MovingAverage{
+		Window:      window,
+		values:      make([]float64, window),
+		valPos:      0,
+		slotsFilled: false,
+	}
 }

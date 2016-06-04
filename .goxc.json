@@ -4,8 +4,8 @@
 		"publish-github"
 	],
 	"BuildConstraints": "linux,darwin,windows",
-	"PackageVersion": "0.1.0",
-	"PrereleaseInfo": "snapshot",
+	"PackageVersion": "0.1.2",
+	"PrereleaseInfo": "beta",
 	"TaskSettings": {
 		"publish-github": {
 			"repository": "ml-predict-prime"
