@@ -4,7 +4,7 @@
 		"publish-github"
 	],
 	"BuildConstraints": "linux,darwin,windows",
-	"PackageVersion": "0.1.2",
+	"PackageVersion": "0.1.3",
 	"PrereleaseInfo": "beta",
 	"TaskSettings": {
 		"publish-github": {
