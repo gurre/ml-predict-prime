@@ -102,3 +102,4 @@ shortcomings/
 data/*.txt
 data/*.json
 data/*.csv
+!data/pi-100mb.txt

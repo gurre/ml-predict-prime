@@ -1,0 +1,9 @@
+{
+  "groups" : {
+    "NUMERIC_VARS_QB_20" : "group('Nfactors')",
+    "NUMERIC_VARS_QB_500" : "group('Comp')",
+    "NUMERIC_VARS_QB_10" : "group('Totient')"
+  },
+  "assignments" : { },
+  "outputs" : [ "ALL_BINARY", "quantile_bin(NUMERIC_VARS_QB_20,20)", "quantile_bin(NUMERIC_VARS_QB_500,500)", "quantile_bin(NUMERIC_VARS_QB_10,10)" ]
+}

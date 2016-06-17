@@ -1,0 +1,37 @@
+{
+  "version" : "1.0",
+  "rowId" : null,
+  "rowWeight" : null,
+  "targetAttributeName" : "Prime",
+  "dataFormat" : "CSV",
+  "dataFileContainsHeader" : true,
+  "attributes" : [ {
+    "attributeName" : "Comp",
+    "attributeType" : "NUMERIC"
+  }, {
+    "attributeName" : "Prime",
+    "attributeType" : "BINARY"
+  }, {
+    "attributeName" : "Nfactors",
+    "attributeType" : "NUMERIC"
+  }, {
+    "attributeName" : "Totient",
+    "attributeType" : "NUMERIC"
+  }, {
+    "attributeName" : "Twin",
+    "attributeType" : "BINARY"
+  }, {
+    "attributeName" : "Triplet",
+    "attributeType" : "BINARY"
+  }, {
+    "attributeName" : "Quad",
+    "attributeType" : "BINARY"
+  }, {
+    "attributeName" : "Penta",
+    "attributeType" : "BINARY"
+  }, {
+    "attributeName" : "Sexy",
+    "attributeType" : "BINARY"
+  } ],
+  "excludedAttributeNames" : [ ]
+}

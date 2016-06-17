@@ -1,4 +1,8 @@
 #!/bin/bash
+
+# Not used!!!
+
+# We need them sorted.
 if [[ $(hash primesieve) -eq 0 ]]; then
   #echo "Sieving primes 0-1e9"
   #primesieve 0 1e9 -t2 -s2048 --print=1 | sort -k 1,1n > data/prime-1e9.txt
